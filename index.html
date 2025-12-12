@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pixel Racer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            image-rendering: pixelated; /* Essential for crisp pixels */
+            image-rendering: crisp-edges;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            background-color: #2a5d2a; /* Fallback grass color */
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+/**
+ * PIXEL RACER
+ * A vanilla JS top-down racing game.
+ */
+
+// --- CONFIGURATION ---
+const LOGICAL_WIDTH = 480; // Widen logical res for better UI fit
+const LOGICAL_HEIGHT = 270;
+const TILE_SIZE = 32;
+const FPS = 60;
+const DT = 1 / FPS;
+
+// Physics Constants
+const PHYS = {
+    ACCEL: 180,
+    BRAKE: 300,
+    FRICTION_ROAD: 60,
+    FRICTION_GRASS: 250,
+    MAX_SPEED_ROAD: 260, // Slightly faster for wider track
+    MAX_SPEED_GRASS: 60,
+    TURN_SPEED: 3.2,
+    DRIFT_FACTOR: 0.95
+};
+
+// --- STATE ---
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const skidCanvas = document.createElement('canvas');
+const skidCtx = skidCanvas.getContext('2d');
+
+let lastTime = 0;
+let accumulator = 0;
+
+const keys = {
+    ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false,
+    w: false, s: false, a: false, d: false,
+    r: false, " ": false // Space for handbrake
+};
+
+const car = {
+    x: 0, y: 0,
+    width: 10, height: 16,
+    angle: 0,
+    velocity: { x: 0, y: 0 },
+    speed: 0,
+    lap: 0,
+    currentCheckpoint: 0,
+    lapStartTime: 0,
+    lastLapTime: 0,
+    bestLapTime: Infinity,
+    finished: false
+};
+
+const camera = { x: 0, y: 0 };
+
+// Map Codes: 0=Grass, 1=Road, 3=Wall
+// Wider track (approx 4 tiles wide)
+// 0: Grass, 1: Road, 3: Wall
+// 28x22 Map
+const mapLayout = [
+    [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3],
+    [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+    [3,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,3,3,3,3,3,3,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,3,1,1,1,1,3,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,3,1,1,1,1,3,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,3,1,1,1,1,3,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,3,3,3,3,3,3,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,3],
+    [3,0,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,0,3],
+    [3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3],
+    [3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3]
+];
+
+const MAP_W = mapLayout[0].length * TILE_SIZE;
+const MAP_H = mapLayout.length * TILE_SIZE;
+
+// Checkpoints (Rect regions in tile coords)
+const checkpoints = [
+    {x: 12, y: 16, w: 4, h: 4}, // Start/Finish (Bottom Straight)
+    {x: 3, y: 10, w: 4, h: 4},  // Left Straight
+    {x: 12, y: 3, w: 4, h: 4},  // Top Straight
+    {x: 20, y: 10, w: 4, h: 4}  // Right Straight
+];
+const TOTAL_LAPS = 3;
+
+// --- INITIALIZATION ---
+
+function init() {
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('keydown', e => {
+        if(keys.hasOwnProperty(e.key) || keys.hasOwnProperty(e.key.toLowerCase())) {
+            keys[e.key] = true;
+            keys[e.key.toLowerCase()] = true;
+        }
+        if(e.key === " ") keys[" "] = true;
+    });
+    window.addEventListener('keyup', e => {
+        if(keys.hasOwnProperty(e.key) || keys.hasOwnProperty(e.key.toLowerCase())) {
+            keys[e.key] = false;
+            keys[e.key.toLowerCase()] = false;
+        }
+        if(e.key === " ") keys[" "] = false;
+    });
+
+    skidCanvas.width = MAP_W;
+    skidCanvas.height = MAP_H;
+
+    resetGame();
+    requestAnimationFrame(loop);
+}
+
+function resetGame() {
+    // Spawn on bottom straight
+    car.x = 14 * TILE_SIZE;
+    car.y = 18 * TILE_SIZE;
+    car.angle = Math.PI; // Facing Left
+    car.velocity = {x: 0, y: 0};
+    car.speed = 0;
+    car.lap = 0; 
+    car.currentCheckpoint = 0;
+    car.finished = false;
+    car.bestLapTime = Infinity;
+    car.lastLapTime = 0;
+    car.lapStartTime = 0;
+
+    skidCtx.clearRect(0, 0, MAP_W, MAP_H);
+}
+
+function resize() {
+    const scale = Math.floor(Math.min(window.innerWidth / LOGICAL_WIDTH, window.innerHeight / LOGICAL_HEIGHT));
+    const finalScale = scale < 1 ? 1 : scale;
+    
+    canvas.width = LOGICAL_WIDTH;
+    canvas.height = LOGICAL_HEIGHT;
+    canvas.style.width = `${LOGICAL_WIDTH * finalScale}px`;
+    canvas.style.height = `${LOGICAL_HEIGHT * finalScale}px`;
+    
+    ctx.imageSmoothingEnabled = false;
+}
+
+// --- GAME LOOP ---
+
+function loop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    const deltaTime = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+
+    accumulator += deltaTime;
+    while (accumulator >= DT) {
+        update(DT);
+        accumulator -= DT;
+    }
+    render();
+    requestAnimationFrame(loop);
+}
+
+// --- LOGIC ---
+
+function update(dt) {
+    if (keys.r) resetGame();
+    if (car.finished) return;
+
+    const gas = (keys.ArrowUp || keys.w) ? 1 : 0;
+    const brake = (keys.ArrowDown || keys.s) ? 1 : 0;
+    const left = (keys.ArrowLeft || keys.a) ? 1 : 0;
+    const right = (keys.ArrowRight || keys.d) ? 1 : 0;
+    const handbrake = keys[" "];
+
+    // Steering
+    if (Math.abs(car.speed) > 10) {
+        const turnDir = right - left;
+        let turnRate = PHYS.TURN_SPEED;
+        if(handbrake) turnRate *= 1.5; // Sharper turn on handbrake
+        car.angle += turnDir * turnRate * dt * (car.speed > 0 ? 1 : -1);
+    }
+
+    // Physics
+    const tileType = getTileAt(car.x, car.y);
+    const isOffRoad = (tileType === 0);
+    const friction = isOffRoad ? PHYS.FRICTION_GRASS : PHYS.FRICTION_ROAD;
+    let maxSpeed = isOffRoad ? PHYS.MAX_SPEED_GRASS : PHYS.MAX_SPEED_ROAD;
+
+    if (gas) {
+        car.speed += PHYS.ACCEL * dt;
+    } else if (brake) {
+        car.speed -= PHYS.BRAKE * dt;
+    } else {
+        if (car.speed > 0) car.speed = Math.max(0, car.speed - friction * dt);
+        if (car.speed < 0) car.speed = Math.min(0, car.speed + friction * dt);
+    }
+    
+    if (handbrake) car.speed = Math.max(0, car.speed - PHYS.BRAKE * 1.5 * dt);
+
+    if (car.speed > maxSpeed) {
+        car.speed -= friction * 2 * dt;
+    }
+    if (car.speed < -60) car.speed = -60;
+
+    // Velocity & Drift
+    const headingX = Math.cos(car.angle);
+    const headingY = Math.sin(car.angle);
+
+    let vx = car.velocity.x;
+    let vy = car.velocity.y;
+
+    const targetVx = headingX * car.speed;
+    const targetVy = headingY * car.speed;
+
+    // Slide factor
+    let drift = PHYS.DRIFT_FACTOR;
+    if(handbrake) drift = 0.90; // More slippery
+    if(isOffRoad) drift = 0.90;
+
+    car.velocity.x = vx + (targetVx - vx) * (1 - Math.pow(1 - drift, dt * 60));
+    car.velocity.y = vy + (targetVy - vy) * (1 - Math.pow(1 - drift, dt * 60));
+
+    const nextX = car.x + car.velocity.x * dt;
+    const nextY = car.y + car.velocity.y * dt;
+
+    if (checkCollision(nextX, nextY)) {
+        car.speed *= -0.5;
+        car.velocity.x *= -0.5;
+        car.velocity.y *= -0.5;
+    } else {
+        car.x = nextX;
+        car.y = nextY;
+    }
+
+    // Skids
+    const speedVecLen = Math.hypot(car.velocity.x, car.velocity.y);
+    const dot = (speedVecLen > 1) ? ((car.velocity.x/speedVecLen) * headingX + (car.velocity.y/speedVecLen) * headingY) : 1;
+    
+    if (Math.abs(car.speed) > 50 && (dot < 0.96 || handbrake || (brake && !isOffRoad))) {
+        drawSkid(car.x, car.y, car.angle, isOffRoad);
+    }
+
+    checkLapLogic();
+
+    // Camera
+    const targetCamX = car.x - LOGICAL_WIDTH / 2;
+    const targetCamY = car.y - LOGICAL_HEIGHT / 2;
+    camera.x += (targetCamX - camera.x) * 0.1;
+    camera.y += (targetCamY - camera.y) * 0.1;
+    camera.x = Math.max(0, Math.min(camera.x, MAP_W - LOGICAL_WIDTH));
+    camera.y = Math.max(0, Math.min(camera.y, MAP_H - LOGICAL_HEIGHT));
+}
+
+function getTileAt(x, y) {
+    const c = Math.floor(x / TILE_SIZE);
+    const r = Math.floor(y / TILE_SIZE);
+    if (r >= 0 && r < mapLayout.length && c >= 0 && c < mapLayout[0].length) {
+        return mapLayout[r][c];
+    }
+    return 0;
+}
+
+function checkCollision(x, y) {
+    const margin = 2;
+    const w = car.width/2 - margin;
+    const h = car.height/2 - margin;
+    const t = getTileAt(x, y);
+    if (t === 3) return true;
+    if (getTileAt(x + w, y) === 3) return true;
+    if (getTileAt(x - w, y) === 3) return true;
+    if (getTileAt(x, y + h) === 3) return true;
+    if (getTileAt(x, y - h) === 3) return true;
+    return false;
+}
+
+function checkLapLogic() {
+    const cx = car.x / TILE_SIZE;
+    const cy = car.y / TILE_SIZE;
+    const inCp = (cp) => (cx >= cp.x && cx <= cp.x + cp.w && cy >= cp.y && cy <= cp.y + cp.h);
+
+    const nextCpIdx = (car.currentCheckpoint + 1) % checkpoints.length;
+    const nextCp = checkpoints[nextCpIdx];
+
+    if (inCp(nextCp)) {
+        if (nextCpIdx === 0) {
+            if (car.lap === 0) {
+                car.lap = 1;
+                car.lapStartTime = performance.now();
+            } else {
+                const now = performance.now();
+                car.lastLapTime = (now - car.lapStartTime) / 1000;
+                if (car.lastLapTime < car.bestLapTime) car.bestLapTime = car.lastLapTime;
+                car.lapStartTime = now;
+                car.lap++;
+                if (car.lap > TOTAL_LAPS) car.finished = true;
+            }
+        }
+        car.currentCheckpoint = nextCpIdx;
+    }
+}
+
+function drawSkid(x, y, a, isOffRoad) {
+    skidCtx.save();
+    skidCtx.translate(x, y);
+    skidCtx.rotate(a);
+    skidCtx.fillStyle = isOffRoad ? 'rgba(40, 60, 40, 0.5)' : 'rgba(20, 20, 20, 0.2)';
+    skidCtx.fillRect(-4, -4, 2, 2);
+    skidCtx.fillRect(2, -4, 2, 2);
+    skidCtx.restore();
+}
+
+function formatTime(sec) {
+    if (sec === Infinity || sec === 0) return "--:--.---";
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    const ms = Math.floor((sec % 1) * 1000);
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(ms).padStart(3,'0')}`;
+}
+
+// --- RENDERING ---
+
+function render() {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    const cx = Math.floor(camera.x);
+    const cy = Math.floor(camera.y);
+    ctx.translate(-cx, -cy);
+
+    drawMap();
+    ctx.drawImage(skidCanvas, 0, 0);
+    drawCar();
+
+    ctx.restore();
+    drawHUD();
+}
+
+function drawMap() {
+    const startCol = Math.floor(camera.x / TILE_SIZE);
+    const endCol = startCol + (LOGICAL_WIDTH / TILE_SIZE) + 1;
+    const startRow = Math.floor(camera.y / TILE_SIZE);
+    const endRow = startRow + (LOGICAL_HEIGHT / TILE_SIZE) + 1;
+
+    for (let r = startRow; r <= endRow; r++) {
+        for (let c = startCol; c <= endCol; c++) {
+            if (r < 0 || r >= mapLayout.length || c < 0 || c >= mapLayout[0].length) continue;
+            
+            const tile = mapLayout[r][c];
+            const tx = c * TILE_SIZE;
+            const ty = r * TILE_SIZE;
+
+            if (tile === 0) { // Grass
+                ctx.fillStyle = '#2a5d2a';
+                ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                // Simple pattern
+                if ((c+r)%2==0) {
+                     ctx.fillStyle = 'rgba(0,0,0,0.05)';
+                     ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                }
+            } else if (tile === 1 || tile === 2 || tile === 4) { // Road
+                ctx.fillStyle = '#555';
+                ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                
+                // Grid/Tiles look
+                ctx.strokeStyle = '#4a4a4a';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(tx, ty, TILE_SIZE, TILE_SIZE);
+
+            } else if (tile === 3) { // Wall
+                ctx.fillStyle = '#844';
+                ctx.fillRect(tx, ty, TILE_SIZE, TILE_SIZE);
+                ctx.fillStyle = '#622';
+                ctx.fillRect(tx+2, ty+2, TILE_SIZE-4, TILE_SIZE-4);
+            }
+            
+            // Start Line Visuals
+            if (r >= 16 && r <= 19 && c === 13) {
+                ctx.fillStyle = '#FFF';
+                 for(let i=0; i<TILE_SIZE; i+=4) {
+                    if(i%8===0) ctx.fillRect(tx, ty + i, 4, 4);
+                    else ctx.fillRect(tx+4, ty + i, 4, 4);
+                }
+            }
+        }
+    }
+}
+
+function drawCar() {
+    ctx.save();
+    ctx.translate(Math.floor(car.x), Math.floor(car.y));
+    ctx.rotate(car.angle + Math.PI/2);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(-car.width/2 + 2, -car.height/2 + 2, car.width, car.height);
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(-car.width/2 - 1, -car.height/2 + 2, 2, 4);
+    ctx.fillRect(car.width/2 - 1, -car.height/2 + 2, 2, 4);
+    ctx.fillRect(-car.width/2 - 1, car.height/2 - 6, 2, 4);
+    ctx.fillRect(car.width/2 - 1, car.height/2 - 6, 2, 4);
+
+    ctx.fillStyle = '#d33';
+    ctx.fillRect(-car.width/2, -car.height/2, car.width, car.height);
+    
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-1, -car.height/2, 2, car.height);
+
+    ctx.fillStyle = '#33a';
+    ctx.fillRect(-car.width/2 + 1, -car.height/2 + 5, car.width - 2, 3);
+
+    ctx.restore();
+}
+
+function drawHUD() {
+    // Current Lap Time Calculation
+    let currentLapTime = 0;
+    if (car.lap > 0 && !car.finished) {
+        currentLapTime = (performance.now() - car.lapStartTime) / 1000;
+    }
+
+    // TOP LEFT BOX
+    const boxW = 160;
+    const boxH = 70;
+    const pad = 10;
+    
+    ctx.fillStyle = 'rgba(20, 20, 20, 0.7)';
+    ctx.fillRect(pad, pad, boxW, boxH);
+    
+    // Text setup
+    ctx.font = '12px "Courier New", monospace';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ccc'; // Label color
+    
+    const x = pad + 10;
+    let y = pad + 10;
+    const lineHeight = 14;
+
+    // Lap
+    ctx.fillText("Lap: ", x, y);
+    ctx.fillStyle = '#fff'; // Value color
+    ctx.fillText(formatTime(currentLapTime), x + 40, y);
+    y += lineHeight;
+
+    // Best
+    ctx.fillStyle = '#ccc';
+    ctx.fillText("Best:", x, y);
+    ctx.fillStyle = (car.bestLapTime !== Infinity) ? '#0f0' : '#fff';
+    ctx.fillText(formatTime(car.bestLapTime), x + 40, y);
+    y += lineHeight;
+
+    // Last
+    ctx.fillStyle = '#ccc';
+    ctx.fillText("Last:", x, y);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(formatTime(car.lastLapTime), x + 40, y);
+    y += lineHeight;
+
+    // Speed
+    // Convert px/s to fake km/h. Max speed ~260 -> 140km/h
+    const kmh = Math.abs(car.speed * 0.55).toFixed(0);
+    ctx.fillStyle = '#ccc';
+    ctx.fillText("Speed:", x, y + 2); // spacer
+    ctx.font = 'bold 12px "Courier New", monospace';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(`${kmh} km/h`, x + 45, y + 2);
+
+
+    // BOTTOM LEFT BOX (Info)
+    const bBoxH = 36;
+    const bBoxY = LOGICAL_HEIGHT - bBoxH - pad;
+    const bBoxW = 320;
+    
+    ctx.fillStyle = 'rgba(20, 20, 20, 0.7)';
+    ctx.fillRect(pad, bBoxY, bBoxW, bBoxH);
+
+    ctx.font = '10px "Courier New", monospace';
+    ctx.fillStyle = '#ccc';
+    
+    // Checkpoints
+    ctx.fillText(`Checkpoints: ${car.currentCheckpoint}/4`, x, bBoxY + 6);
+    ctx.fillText(`Laps: ${car.lap}/${TOTAL_LAPS}`, x + 120, bBoxY + 6);
+
+    ctx.fillStyle = '#aaa';
+    ctx.fillText("WASD/Arrows to Drive, SPACE Handbrake, R Reset", x, bBoxY + 20);
+
+    // Center Message
+    if (car.finished) {
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(0, LOGICAL_HEIGHT/2 - 30, LOGICAL_WIDTH, 60);
+        ctx.fillStyle = '#ff0';
+        ctx.textAlign = 'center';
+        ctx.font = '20px monospace';
+        ctx.fillText("RACE COMPLETE", LOGICAL_WIDTH/2, LOGICAL_HEIGHT/2 - 10);
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(`Best Time: ${formatTime(car.bestLapTime)}`, LOGICAL_WIDTH/2, LOGICAL_HEIGHT/2 + 15);
+        ctx.textAlign = 'left'; // Reset
+    }
+}
+
+// Start
+init();
+
+</script>
+</body>
+</html>
